@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -19,8 +21,16 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
-activities = {
+# Initialize Firebase
+cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS_PATH', 'path/to/serviceAccountKey.json'))
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# Firestore collection for activities
+activities_collection = db.collection('activities')
+
+# Initial activity data
+initial_activities = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
         "schedule": "Fridays, 3:30 PM - 5:00 PM",
@@ -77,6 +87,11 @@ activities = {
     }
 }
 
+# Initialize data if not present
+if not activities_collection.document('Chess Club').get().exists:
+    for name, data in initial_activities.items():
+        activities_collection.document(name).set(data)
+
 
 @app.get("/")
 def root():
@@ -85,18 +100,22 @@ def root():
 
 @app.get("/activities")
 def get_activities():
+    activities = {}
+    docs = activities_collection.stream()
+    for doc in docs:
+        activities[doc.id] = doc.to_dict()
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str):
     """Sign up a student for an activity"""
-    # Validate activity exists
-    if activity_name not in activities:
+    doc_ref = activities_collection.document(activity_name)
+    doc = doc_ref.get()
+    if not doc.exists:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Get the specific activity
-    activity = activities[activity_name]
+    activity = doc.to_dict()
 
     # Validate student is not already signed up
     if email in activity["participants"]:
@@ -107,18 +126,19 @@ def signup_for_activity(activity_name: str, email: str):
 
     # Add student
     activity["participants"].append(email)
+    doc_ref.update({"participants": activity["participants"]})
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
 @app.delete("/activities/{activity_name}/unregister")
 def unregister_from_activity(activity_name: str, email: str):
     """Unregister a student from an activity"""
-    # Validate activity exists
-    if activity_name not in activities:
+    doc_ref = activities_collection.document(activity_name)
+    doc = doc_ref.get()
+    if not doc.exists:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Get the specific activity
-    activity = activities[activity_name]
+    activity = doc.to_dict()
 
     # Validate student is signed up
     if email not in activity["participants"]:
@@ -129,4 +149,5 @@ def unregister_from_activity(activity_name: str, email: str):
 
     # Remove student
     activity["participants"].remove(email)
+    doc_ref.update({"participants": activity["participants"]})
     return {"message": f"Unregistered {email} from {activity_name}"}
